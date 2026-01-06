@@ -23,115 +23,43 @@ SAIPN 的核心思路是：
 ![SAIPN Framework](./主图.png)
 
 
-## Repository Structure
-
-- `metaverse/`
-  - 面向（metaverse）数据/实验的脚本
-  - `gen_sentiment.py`：生成情感概率列
-  - `gen_vectors.py`：生成文本向量（SentenceTransformer）
-  - `full.py`：全量 SAIPN（含 time decay + sentiment + network metrics）
-  - `ablation_no_sentiment.py` / `ablation_no_tags.py` / `ablation_no_time_decay.py`
-  - `summary_ablation.py`：汇总消融结果
-  - `count_CNLR.py`：基于显式/隐式快照对齐时间轴后计算 CNLR（可选）
-- `pheme/pheme/`
-  - 面向 PHEME 数据/实验的同构脚本（流程与 `metaverse/` 类似）
-- `plot/`
-  - 绘图与指标后处理脚本、图像产物
-
-## Environment
-
-本仓库未提供统一的依赖文件，你可以按需安装（建议 Python >= 3.9）：
+## Installation
 
 ```bash
-pip install pandas numpy tqdm networkx torch transformers sentence-transformers
+pip install pandas numpy torch networkx transformers sentence-transformers
 ```
 
-可选（显式加速/图计算加速）：
-
-- 如果你安装了 RAPIDS（`cugraph`, `cudf`），部分脚本会自动使用 GPU 图算法；否则会回退到 NetworkX（CPU）。
-
-## Data Format
-
-脚本默认读取 CSV，并依赖以下字段（至少包含这些列名之一）：
-
-- **ID 列**（必需）：优先使用 `raw_value.id_str`（或 `id_str` / `id` 等）
-- **时间列**（必需）：`raw_value.created_at`（可被 `pandas.to_datetime` 解析）
-- **文本列**（用于情感/向量）：例如 `raw_value.text` / `raw_value.full_text` / `text` 等
-- **Tags 列**（可选）：用于 `No Tags`/`Tags` 相关向量生成（不同脚本可能用 `Tags` 作为文本来源）
-
-## Quick Start
-
-下面以 `metaverse/` 为例给出最小流程（PHEME 同理，只需替换到 `pheme/pheme/` 下对应脚本）。
-
-### 1) 生成情感文件
-
+Optional GPU acceleration:
 ```bash
-python metaverse/gen_sentiment.py \
-  --input <YOUR_DATA.csv> \
-  --output metaverse/embedding/final_with_sentiment2.csv \
-  --text-col raw_value.text \
-  --id-col raw_value.id_str \
-  --model cardiffnlp/twitter-roberta-base-sentiment-latest \
-  --batch 32 \
-  --device cuda
+pip install cugraph cudf  # RAPIDS for GPU graph algorithms
 ```
 
-### 2) 生成文本向量（语义表示）
+## Core Modules
 
-```bash
-python metaverse/gen_vectors.py \
-  --input <YOUR_DATA.csv> \
-  --output metaverse/embedding/output_vectors.txt \
-  --text-col raw_value.text \
-  --id-col raw_value.id_str \
-  --model sentence-transformers/all-MiniLM-L6-v2 \
-  --batch 128 \
-  --device cuda
-```
+### `saipn_core.embeddings`
+- `generate_embeddings()` - Generate text embeddings
+- `generate_embeddings_from_dataframe()` - Batch processing with IDs
 
-### 3) 运行 Full SAIPN（构建隐式网络 + 指标输出）
+### `saipn_core.sentiment`
+- `analyze_sentiment()` - Sentiment analysis for text sequences
+- `build_sentiment_map_from_probabilities()` - Convert probability scores to sentiment values
 
-`metaverse/full.py` 支持通过参数指定数据/向量/情感文件与输出目录，建议优先用参数覆盖默认路径：
+### `saipn_core.implicit_network`
+- `load_vectors_to_device()` - Load pre-computed vectors to GPU
+- `build_implicit_network()` - Main network construction algorithm
+- `ImplicitNetworkConfig` - Configuration dataclass
 
-```bash
-python metaverse/full.py \
-  --data-file <YOUR_DATA.csv> \
-  --vector-file metaverse/embedding/output_vectors.txt \
-  --sentiment-file metaverse/embedding/final_with_sentiment2.csv \
-  --output-dir metaverse/outputs/full_run \
-  --resample D \
-  --decay-unit-hours 360.0 \
-  --delete-after-hours 720.0 \
-  --score-threshold 0.70
-```
+### `saipn_core.metrics`
+- `detect_communities_louvain()` - Community detection
+- `calculate_cnlr_fast()` - Community new link rate
+- `compute_basic_graph_metrics()` - Basic network statistics
 
-运行完成后会在输出目录生成 `index_gpu.csv`（每个时间窗一行 + 最后一行全局汇总）。
+### `saipn_core.dcprr`
+- `calculate_all_dcprr_scores()` - Dynamic community propagation retention rate
 
-### 4) 消融实验与汇总
-
-```bash
-python metaverse/ablation_no_sentiment.py --resample D --decay-unit-hours 360 --delete-after-hours 720 --score-threshold 0.70 \
-  --data-file <YOUR_DATA.csv> --vector-file metaverse/embedding/output_vectors.txt --sentiment-file metaverse/embedding/final_with_sentiment2.csv
-
-python metaverse/ablation_no_tags.py --resample D --decay-unit-hours 360 --delete-after-hours 720 --score-threshold 0.70 \
-  --data-file <YOUR_DATA.csv> --vector-file metaverse/embedding/output_vectors_no_tags.txt --sentiment-file metaverse/embedding/final_with_sentiment2.csv
-
-python metaverse/ablation_no_time_decay.py --resample D --decay-unit-hours 360 --delete-after-hours 720 --score-threshold 0.70 \
-  --data-file <YOUR_DATA.csv> --vector-file metaverse/embedding/output_vectors.txt --sentiment-file metaverse/embedding/final_with_sentiment2.csv
-
-python metaverse/summary_ablation.py
-```
-
-### 5) （可选）计算 CNLR（显式 vs 隐式）
-
-如果你有显式网络快照与隐式网络快照（`.edgelist`），可用：
-
-```bash
-python metaverse/count_CNLR.py \
-  --explicit-dir <EXPLICIT_SNAPSHOT_DIR> \
-  --implicit-dir <IMPLICIT_SNAPSHOT_DIR> \
-  --metric indegree
-```
+### `saipn_core.cnlr`
+- `calculate_cnlr_from_topk()` - CNLR from top-k node appearance data
+- `parse_first_appearance()` - Parse top-k appearance timestamps
 
 ## Notes
 
