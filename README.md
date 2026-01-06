@@ -20,7 +20,7 @@ SAIPN 的核心思路是：
 
 ## Framework
 
-![SAIPN Framework](./框架.png)
+![SAIPN Framework](./主图.png)
 
 
 ## Repository Structure
